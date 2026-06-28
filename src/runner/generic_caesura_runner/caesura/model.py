@@ -30,6 +30,11 @@ MAX_NUM_TOKENS_HARD = {
     "gpt-4-0613": 8_192 - 1024
 }
 
+DEFAULT_MAX_RPM = 60
+DEFAULT_MAX_TPM = 60_000
+DEFAULT_MAX_NUM_TOKENS_SOFT = 8_192
+DEFAULT_MAX_NUM_TOKENS_HARD = 32_768
+
 MULTIPLIER = 0.5
 REDUCE_MULTIPLIER = False
 
@@ -65,10 +70,18 @@ class MyOpenAI(ChatOpenAI):
 
     def _generate(self, prompts, *args, **kwargs):
         if not isinstance(self.client, MyClient):
-            self.max_num_tokens_hard = MAX_NUM_TOKENS_HARD[self.model_name]
-            self.max_num_tokens_soft = MAX_NUM_TOKENS_SOFT[self.model_name]
-            self.max_rpm = int(MAX_RPM[self.model_name] * MULTIPLIER)
-            self.max_tpm = int(MAX_TPM[self.model_name] * MULTIPLIER)
+            self.max_num_tokens_hard = MAX_NUM_TOKENS_HARD.get(
+                self.model_name, DEFAULT_MAX_NUM_TOKENS_HARD
+            )
+            self.max_num_tokens_soft = MAX_NUM_TOKENS_SOFT.get(
+                self.model_name, DEFAULT_MAX_NUM_TOKENS_SOFT
+            )
+            self.max_rpm = int(
+                MAX_RPM.get(self.model_name, DEFAULT_MAX_RPM) * MULTIPLIER
+            )
+            self.max_tpm = int(
+                MAX_TPM.get(self.model_name, DEFAULT_MAX_TPM) * MULTIPLIER
+            )
 
             self.client = MyClient(self.client, self)
 
@@ -122,7 +135,11 @@ class MyOpenAI(ChatOpenAI):
         return result
 
     def get_prompt_len(self, prompts):
-        return self.get_num_tokens(ChatPromptTemplate.from_messages(prompts).format()) + 100
+        prompt = ChatPromptTemplate.from_messages(prompts).format()
+        try:
+            return self.get_num_tokens(prompt) + 100
+        except Exception:
+            return int(len(prompt) / 4) + 100
 
 
 class MyClient(Completion):

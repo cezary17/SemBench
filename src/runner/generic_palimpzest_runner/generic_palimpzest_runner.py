@@ -15,13 +15,91 @@ from typing import List, Optional
 import litellm
 import palimpzest as pz
 import pandas as pd
-from palimpzest.constants import Model
+from palimpzest.constants import MODEL_CARDS, Model
 import json
 import os
 
 from runner.generic_runner import GenericRunner, GenericQueryMetric
 
 litellm.drop_params = True
+
+
+LOCAL_MODEL_CARD = {
+    "usd_per_input_token": 0.0,
+    "usd_per_output_token": 0.0,
+    "usd_per_audio_input_token": 0.0,
+    "seconds_per_output_token": 0.1,
+    "overall": 50.0,
+}
+
+
+class LocalPalimpzestModel(str):
+    """Minimal model shim for arbitrary local OpenAI-compatible models."""
+
+    @property
+    def value(self):
+        return str(self)
+
+    @property
+    def name(self):
+        return "LOCAL"
+
+    def __repr__(self):
+        return self.value
+
+    def is_llama_model(self):
+        return "llama" in self.value.lower()
+
+    def is_clip_model(self):
+        return False
+
+    def is_together_model(self):
+        return False
+
+    def is_text_embedding_model(self):
+        return False
+
+    def is_o_model(self):
+        return False
+
+    def is_gpt_5_model(self):
+        return False
+
+    def is_openai_model(self):
+        return True
+
+    def is_anthropic_model(self):
+        return False
+
+    def is_vertex_model(self):
+        return False
+
+    def is_google_model(self):
+        return False
+
+    def is_vllm_model(self):
+        return True
+
+    def is_reasoning_model(self):
+        return False
+
+    def is_text_model(self):
+        return True
+
+    def is_vision_model(self):
+        return True
+
+    def is_audio_model(self):
+        return True
+
+    def is_text_image_multimodal_model(self):
+        return True
+
+    def is_text_audio_multimodal_model(self):
+        return True
+
+    def is_embedding_model(self):
+        return False
 
 
 class GenericPalimpzestRunner(GenericRunner):
@@ -57,6 +135,7 @@ class GenericPalimpzestRunner(GenericRunner):
         env_config_file = os.getenv("PALIMPZEST_CONFIG_FILE")
         self.config_file = config_file or env_config_file
         self.config_data = self._load_config() if self.config_file else None
+        self._configure_local_provider()
 
     @override
     def get_system_name(self) -> str:
@@ -192,6 +271,9 @@ class GenericPalimpzestRunner(GenericRunner):
             QueryProcessorConfig for Palimpzest
         """
 
+        if self.llm_provider_config.is_local:
+            return self._local_palimpzest_config()
+
         # Use configuration data if available, otherwise use defaults
         if self.config_data:
             config_kwargs = {
@@ -220,27 +302,83 @@ class GenericPalimpzestRunner(GenericRunner):
                 config_kwargs["reasoning_effort"] = reasoning_effort
 
             return pz.QueryProcessorConfig(**config_kwargs)
-        else:
-            # Use self.model_name to determine the model when config_data is not provided
-            selected_model = self._get_model_from_name(self.model_name)
 
-            config_kwargs = {
-                "policy": pz.MaxQuality(),
-                "execution_strategy": "parallel",
-                "max_workers": self.concurrent_llm_worker,
-                "join_parallelism": self.concurrent_llm_worker,
-                "verbose": False,
-                "progress": True,
-                "available_models": [selected_model],
-            }
+        # Use self.model_name to determine the model when config_data is not provided
+        selected_model = self._get_model_from_name(self.model_name)
 
-            # Add reasoning_effort for compatible models
-            if self._should_use_reasoning_effort(selected_model):
-                config_kwargs["reasoning_effort"] = (
-                    "minimal"  # Use minimal reasoning effort
-                )
+        config_kwargs = {
+            "policy": pz.MaxQuality(),
+            "execution_strategy": "parallel",
+            "max_workers": self.concurrent_llm_worker,
+            "join_parallelism": self.concurrent_llm_worker,
+            "verbose": False,
+            "progress": True,
+            "available_models": [selected_model],
+        }
 
+        # Add reasoning_effort for compatible models
+        if self._should_use_reasoning_effort(selected_model):
+            config_kwargs["reasoning_effort"] = (
+                "minimal"  # Use minimal reasoning effort
+            )
+
+        return pz.QueryProcessorConfig(**config_kwargs)
+
+    def _local_palimpzest_config(self) -> pz.QueryProcessorConfig:
+        local_model = LocalPalimpzestModel(self.model_name)
+        config_kwargs = {
+            "policy": pz.MaxQuality(),
+            "execution_strategy": "parallel",
+            "max_workers": self.concurrent_llm_worker,
+            "join_parallelism": self.concurrent_llm_worker,
+            "verbose": False,
+            "progress": True,
+            "available_models": [local_model],
+            "api_base": self.llm_provider_config.base_url,
+            "use_vertex": False,
+        }
+        return self._construct_query_processor_config(config_kwargs)
+
+    def _construct_query_processor_config(
+        self, config_kwargs: dict
+    ) -> pz.QueryProcessorConfig:
+        if not self.llm_provider_config.is_local:
             return pz.QueryProcessorConfig(**config_kwargs)
+
+        construct = getattr(pz.QueryProcessorConfig, "model_construct", None)
+        if construct is not None:
+            return construct(**config_kwargs)
+        return pz.QueryProcessorConfig.construct(**config_kwargs)
+
+    def _configure_local_provider(self) -> None:
+        if not self.llm_provider_config.is_local:
+            original_completion = getattr(
+                litellm, "_sembench_original_completion", None
+            )
+            if original_completion is not None:
+                litellm.completion = original_completion
+            return
+
+        MODEL_CARDS[self.model_name] = dict(LOCAL_MODEL_CARD)
+        os.environ["OPENAI_API_KEY"] = self.llm_provider_config.api_key or "local"
+        os.environ["OPENAI_API_BASE"] = self.llm_provider_config.base_url or ""
+
+        original_completion = getattr(
+            litellm, "_sembench_original_completion", None
+        )
+        if original_completion is None:
+            original_completion = litellm.completion
+            litellm._sembench_original_completion = original_completion
+
+        local_config = self.llm_provider_config
+
+        def completion_with_local_defaults(*args, **kwargs):
+            kwargs.setdefault("api_base", local_config.base_url)
+            kwargs.setdefault("api_key", local_config.api_key)
+            kwargs.update(local_config.params)
+            return original_completion(*args, **kwargs)
+
+        litellm.completion = completion_with_local_defaults
 
     def execute_query(self, query_id: int) -> GenericQueryMetric:
         """

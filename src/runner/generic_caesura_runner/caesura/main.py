@@ -26,16 +26,20 @@ MAX_NUM_ERRORS = {
     "gpt-4-0613": 3
 }
 
+DEFAULT_MAX_NUM_RETRIES = 1
+DEFAULT_MAX_NUM_ERRORS = 3
+
 class Caesura():
-    def __init__(self, database, model_name="gpt-3.5-turbo-0613", interactive=True, log_path=None):
+    def __init__(self, database, model_name="gpt-3.5-turbo-0613", interactive=True, log_path=None, llm_kwargs=None):
         self.database = database
         self.interactive = interactive
         self.working_memory = dict()
-        self.llm = MyOpenAI(temperature=0, model_name=model_name, max_tokens=1024, logging_dir=log_path or ".")
+        self.llm_kwargs = dict(llm_kwargs or {})
+        self.llm = self._create_llm(model_name, log_path)
         self.phases = list()
         self.tools = list()
-        self.max_num_tries = MAX_NUM_RETRIES[model_name]
-        self.max_num_errors = MAX_NUM_ERRORS[model_name]
+        self.max_num_tries = MAX_NUM_RETRIES.get(model_name, DEFAULT_MAX_NUM_RETRIES)
+        self.max_num_errors = MAX_NUM_ERRORS.get(model_name, DEFAULT_MAX_NUM_ERRORS)
         self.log_path = log_path
         self.file_handler = None
         self.last_result = None
@@ -44,6 +48,17 @@ class Caesura():
         self.setup_logging()
         self.setup_tools()
         self.setup_phases()
+
+    def _create_llm(self, model_name, log_path=None, **overrides):
+        kwargs = {
+            "temperature": 0,
+            "model_name": model_name,
+            "max_tokens": 1024,
+            "logging_dir": log_path or ".",
+        }
+        kwargs.update(self.llm_kwargs)
+        kwargs.update(overrides)
+        return MyOpenAI(**kwargs)
 
     def setup_logging(self):
         if self.log_path is not None:
@@ -135,8 +150,12 @@ class Caesura():
         self.setup_tools()
         self.setup_phases()
         error = e
-        self.llm = MyOpenAI(temperature=self.llm.temperature + 0.2,
-                            model_name=self.llm.model_name, max_tokens=1024)
+        self.llm = self._create_llm(
+            self.llm.model_name,
+            self.log_path,
+            temperature=self.llm.temperature + 0.2,
+            max_tokens=1024,
+        )
         return error
 
     def log_final_plan(self, query, final_plan, final_result):

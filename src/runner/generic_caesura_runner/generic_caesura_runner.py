@@ -48,8 +48,8 @@ class GenericCaesuraRunner(GenericRunner):
         """
         super().__init__(
             use_case,
-            model_name,
             scale_factor,
+            model_name,
             concurrent_llm_worker,
             skip_setup,
         )
@@ -70,15 +70,30 @@ class GenericCaesuraRunner(GenericRunner):
             database=self.database,
             model_name=self.caesura_model,
             interactive=False,
+            llm_kwargs=self._caesura_llm_kwargs(),
         )
 
     def _map_model_name(self, model_name: str) -> str:
         """Map MMBench model names to CAESURA model names."""
+        if self.llm_provider_config.is_local:
+            return model_name
+
         model_mapping = {
             "gpt-4": "gpt-4-0613",
             "gpt-3.5": "gpt-3.5-turbo-0613",
         }
         return model_mapping.get(model_name, "gpt-4-0613")  # Default to GPT-4
+
+    def _caesura_llm_kwargs(self) -> Dict[str, Any]:
+        if not self.llm_provider_config.is_local:
+            return {}
+
+        return self.llm_provider_config.merge_kwargs(
+            endpoint_fields={
+                "openai_api_base": self.llm_provider_config.base_url,
+                "openai_api_key": self.llm_provider_config.api_key,
+            }
+        )
 
     def _setup_database_from_files(self):
         """Setup CAESURA database using MMBench data files."""

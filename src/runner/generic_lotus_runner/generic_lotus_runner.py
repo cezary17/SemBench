@@ -109,6 +109,16 @@ class GenericLotusRunner(GenericRunner):
             "max_tokens": self.max_tokens,
         }
 
+        if self.llm_provider_config.is_local:
+            local_config = self.llm_provider_config.merge_kwargs(
+                defaults=base_config,
+                endpoint_fields={
+                    "api_base": self.llm_provider_config.base_url,
+                    "api_key": self.llm_provider_config.api_key,
+                },
+            )
+            return LM(self.model_name, **local_config)
+
         model_lower = self.model_name.lower()
 
         if "gemini-2.5-pro" in model_lower or "gemini_2_5_pro" in model_lower:

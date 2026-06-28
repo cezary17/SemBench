@@ -22,7 +22,19 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
+
+from runner.llm_provider_config import (
+    LLMProviderConfig,
+    llm_provider_config_from_args,
+    llm_provider_config_from_env,
+    set_llm_provider_env,
+    validate_no_bigquery_local,
+)
 
 # Add src directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -151,6 +163,7 @@ def run_system_isolated(
     model_name: str,
     scale_factor: Optional[int],
     skip_setup: bool,
+    llm_config: LLMProviderConfig,
 ) -> Dict:
     """
     Run a system in its isolated virtual environment via subprocess.
@@ -171,6 +184,7 @@ def run_system_isolated(
         "--use-case", use_case,
         "--model", model_name,
     ]
+    cmd += llm_config.to_cli_args()
     if queries:
         cmd += ["--queries"] + [str(q) for q in queries]
     if scale_factor is not None:
@@ -237,6 +251,7 @@ def run_benchmark(
     model_name: str = "gemini-2.5-flash",
     scale_factor: str = None,
     use_isolation: bool = True,
+    llm_config: LLMProviderConfig = None,
 ):
     """
     Run benchmarks for specified systems and use cases.
@@ -249,6 +264,10 @@ def run_benchmark(
         model_name: Model name to use for systems that support it
         use_isolation: Use per-system venvs when available
     """
+    llm_config = llm_config or llm_provider_config_from_env()
+    set_llm_provider_env(llm_config)
+    validate_no_bigquery_local(systems, llm_config)
+
     results = {}
 
     for use_case in use_cases:
@@ -274,6 +293,7 @@ def run_benchmark(
                     model_name=model_name,
                     scale_factor=scale_factor,
                     skip_setup=skip_setup,
+                    llm_config=llm_config,
                 )
                 results[use_case][system] = system_results
 
@@ -305,7 +325,7 @@ def run_benchmark(
                     system_metrics = runner.run_all_queries(queries=queries)
 
                     results[use_case][system] = {
-                        f"Q{query_id}": metric.to_dict()
+                        f"Q{query_id}": runner.metric_to_dict(metric)
                         for query_id, metric in system_metrics.items()
                     }
 
@@ -401,6 +421,34 @@ Examples:
     )
 
     parser.add_argument(
+        "--llm-provider",
+        choices=["default", "local"],
+        default="default",
+        help="LLM provider mode (default: default)",
+    )
+
+    parser.add_argument(
+        "--llm-base-url",
+        type=str,
+        default=None,
+        help="OpenAI-compatible base URL for --llm-provider local",
+    )
+
+    parser.add_argument(
+        "--llm-api-key",
+        type=str,
+        default=None,
+        help="API key for --llm-provider local (default: local)",
+    )
+
+    parser.add_argument(
+        "--llm-params",
+        type=str,
+        default="{}",
+        help="JSON object of model parameters applied in local provider mode",
+    )
+
+    parser.add_argument(
         "--scale-factor",
         type=int,
         help="Factor to control the dataset size. Note that each use case has its own range for its respective scale factor.",  # noqa: E501
@@ -417,6 +465,14 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    try:
+        llm_config = llm_provider_config_from_args(args)
+        validate_no_bigquery_local(args.systems, llm_config)
+    except ValueError as e:
+        parser.error(str(e))
+
+    set_llm_provider_env(llm_config)
 
     # Parse query IDs
     query_ids = None
@@ -445,6 +501,9 @@ Examples:
     print(f"Systems: {', '.join(args.systems)}")
     print(f"Use cases: {', '.join(args.use_cases)}")
     print(f"Model: {args.model}")
+    print(f"LLM provider: {llm_config.provider}")
+    if llm_config.is_local:
+        print(f"LLM base URL: {llm_config.base_url}")
     print(f"Queries: {', '.join(map(str, query_ids)) if query_ids else 'All'}")
     print(f"Scale factor: {args.scale_factor}")
     print(f"Isolation: {'enabled' if use_isolation else 'disabled'}")
@@ -458,6 +517,7 @@ Examples:
         model_name=args.model,
         scale_factor=args.scale_factor,
         use_isolation=use_isolation,
+        llm_config=llm_config,
     )
 
     # Print summary

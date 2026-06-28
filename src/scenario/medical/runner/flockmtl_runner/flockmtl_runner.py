@@ -41,4 +41,6 @@ class FlockMTLRunner(GenericFlockMTLRunner):
             skip_setup=skip_setup,
         )
 
-        self.flockmtl_conn = FlockMTLMedicalSetup().get_connection()
+        self.flockmtl_conn = FlockMTLMedicalSetup(
+            model_name=model_name
+        ).get_connection()

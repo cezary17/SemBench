@@ -19,7 +19,11 @@ import sys
 # Add src directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
 
 def main():
@@ -46,8 +50,46 @@ def main():
     parser.add_argument(
         "--skip-setup", action="store_true", help="Skip data setup phase"
     )
+    parser.add_argument(
+        "--llm-provider",
+        choices=["default", "local"],
+        default="default",
+        help="LLM provider mode",
+    )
+    parser.add_argument(
+        "--llm-base-url",
+        type=str,
+        default=None,
+        help="OpenAI-compatible base URL for local provider",
+    )
+    parser.add_argument(
+        "--llm-api-key",
+        type=str,
+        default=None,
+        help="API key for local provider",
+    )
+    parser.add_argument(
+        "--llm-params",
+        type=str,
+        default="{}",
+        help="JSON object of model parameters for local provider",
+    )
 
     args = parser.parse_args()
+
+    from runner.llm_provider_config import (
+        llm_provider_config_from_args,
+        set_llm_provider_env,
+        validate_no_bigquery_local,
+    )
+
+    try:
+        llm_config = llm_provider_config_from_args(args)
+        validate_no_bigquery_local([args.system], llm_config)
+        set_llm_provider_env(llm_config)
+    except ValueError as e:
+        print(f"\n__WORKER_ERROR__{str(e)}__END_WORKER_ERROR__")
+        sys.exit(1)
 
     # Import runner infrastructure
     from run import get_runner_class, parse_query_ids
@@ -76,7 +118,7 @@ def main():
         # Write a completion marker with summary for the parent process
         summary = {}
         for query_id, metric in metrics.items():
-            summary[f"Q{query_id}"] = metric.to_dict()
+            summary[f"Q{query_id}"] = runner.metric_to_dict(metric)
 
         # Print summary as JSON to stdout for parent process
         print(f"\n__WORKER_RESULT__{json.dumps(summary)}__END_WORKER_RESULT__")
