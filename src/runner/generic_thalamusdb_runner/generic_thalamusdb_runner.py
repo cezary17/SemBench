@@ -98,7 +98,9 @@ class GenericThalamusDBRunner(GenericRunner):
 
     def _write_local_model_config(self) -> str:
         endpoint_fields = {
-            "model": self.model_name,
+            "model": self.llm_provider_config.litellm_model_name(
+                self.model_name
+            ),
             "api_base": self.llm_provider_config.base_url,
             "api_key": self.llm_provider_config.api_key,
         }

@@ -117,7 +117,10 @@ class GenericLotusRunner(GenericRunner):
                     "api_key": self.llm_provider_config.api_key,
                 },
             )
-            lm = LM(self._local_litellm_model_name(), **local_config)
+            lm = LM(
+                self.llm_provider_config.litellm_model_name(self.model_name),
+                **local_config,
+            )
             self._install_lotus_response_error_handler(lm)
             return lm
 
@@ -160,14 +163,6 @@ class GenericLotusRunner(GenericRunner):
             self._install_lotus_response_error_handler(lm)
             return lm
 
-    def _local_litellm_model_name(self) -> str:
-        """Use LiteLLM's OpenAI provider path for local OpenAI-compatible endpoints."""
-        if "custom_llm_provider" in self.llm_provider_config.params:
-            return self.model_name
-        if self.model_name.startswith("openai/"):
-            return self.model_name
-        return f"openai/{self.model_name}"
-
     def _install_lotus_response_error_handler(self, lm: LM) -> None:
         """Make LOTUS raise returned LiteLLM exceptions with useful context."""
         original_get_top_choice = lm._get_top_choice
@@ -201,7 +196,10 @@ class GenericLotusRunner(GenericRunner):
             ) from response
 
         if not hasattr(response, "choices"):
-            context = f"LOTUS LLM returned an invalid response for model '{self.model_name}'"
+            context = (
+                "LOTUS LLM returned an invalid response for model "
+                f"'{self.model_name}'"
+            )
             if self.llm_provider_config.is_local:
                 context += f" at '{self.llm_provider_config.base_url}'"
             raise RuntimeError(

@@ -66,6 +66,16 @@ class LLMProviderConfig:
         """Return params safe for metrics/logging."""
         return _redact_sensitive_params(self.params)
 
+    def litellm_model_name(self, model_name: str) -> str:
+        """Return the model name LiteLLM expects for local endpoints."""
+        if not self.is_local:
+            return model_name
+        if "custom_llm_provider" in self.params:
+            return model_name
+        if model_name.startswith("openai/"):
+            return model_name
+        return f"openai/{model_name}"
+
 
 def parse_llm_params(raw_params: Optional[str]) -> Dict[str, Any]:
     """Parse the JSON value supplied to --llm-params."""

@@ -325,7 +325,9 @@ class GenericPalimpzestRunner(GenericRunner):
         return pz.QueryProcessorConfig(**config_kwargs)
 
     def _local_palimpzest_config(self) -> pz.QueryProcessorConfig:
-        local_model = LocalPalimpzestModel(self.model_name)
+        local_model = LocalPalimpzestModel(
+            self.llm_provider_config.litellm_model_name(self.model_name)
+        )
         config_kwargs = {
             "policy": pz.MaxQuality(),
             "execution_strategy": "parallel",
@@ -359,7 +361,11 @@ class GenericPalimpzestRunner(GenericRunner):
                 litellm.completion = original_completion
             return
 
+        local_model_name = self.llm_provider_config.litellm_model_name(
+            self.model_name
+        )
         MODEL_CARDS[self.model_name] = dict(LOCAL_MODEL_CARD)
+        MODEL_CARDS[local_model_name] = dict(LOCAL_MODEL_CARD)
         os.environ["OPENAI_API_KEY"] = self.llm_provider_config.api_key or "local"
         os.environ["OPENAI_API_BASE"] = self.llm_provider_config.base_url or ""
 
@@ -375,8 +381,27 @@ class GenericPalimpzestRunner(GenericRunner):
         def completion_with_local_defaults(*args, **kwargs):
             kwargs.setdefault("api_base", local_config.base_url)
             kwargs.setdefault("api_key", local_config.api_key)
+            if args and isinstance(args[0], str):
+                args = (
+                    local_config.litellm_model_name(args[0]),
+                    *args[1:],
+                )
+            elif "model" in kwargs:
+                kwargs["model"] = local_config.litellm_model_name(
+                    kwargs["model"]
+                )
             kwargs.update(local_config.params)
-            return original_completion(*args, **kwargs)
+            try:
+                return original_completion(*args, **kwargs)
+            except Exception as exc:
+                model = kwargs.get("model") or (
+                    args[0] if args else self.model_name
+                )
+                raise RuntimeError(
+                    "Palimpzest LLM request failed for model "
+                    f"'{model}' at '{local_config.base_url}': "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
 
         litellm.completion = completion_with_local_defaults
 
