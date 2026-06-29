@@ -219,7 +219,10 @@ class GenericLotusRunner(GenericRunner):
         for attempt in range(max_retries):
             try:
                 # Make a simple test call to establish connection
-                self.lm.__call__(["hi"], show_progress_bar=False)
+                self.lm.__call__(
+                    [[{"role": "user", "content": "hi"}]],
+                    show_progress_bar=False,
+                )
                 print(
                     f"LOTUS connection warmed up successfully on attempt {attempt + 1}"
                 )
