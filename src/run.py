@@ -210,8 +210,8 @@ def run_system_isolated(
                 continue
             print(f"  [{system}] {line}")
 
-    # Parse worker result from stdout
-    if result.returncode == 0 and result.stdout:
+    # Parse structured results even when one or more queries failed.
+    if result.stdout:
         match = re.search(
             r"__WORKER_RESULT__(.+?)__END_WORKER_RESULT__", result.stdout
         )
@@ -243,6 +243,17 @@ def run_system_isolated(
     return {"error": "No results returned from worker"}
 
 
+def system_results_succeeded(system_results: Dict) -> bool:
+    """Return whether every query for a system completed successfully."""
+    if not system_results or "error" in system_results:
+        return False
+
+    return all(
+        isinstance(metric, dict) and metric.get("status") == "success"
+        for metric in system_results.values()
+    )
+
+
 def run_benchmark(
     systems: List[str],
     use_cases: List[str],
@@ -252,7 +263,7 @@ def run_benchmark(
     scale_factor: str = None,
     use_isolation: bool = True,
     llm_config: LLMProviderConfig = None,
-):
+) -> tuple[Dict, bool]:
     """
     Run benchmarks for specified systems and use cases.
 
@@ -263,12 +274,17 @@ def run_benchmark(
         skip_setup: Whether to skip setup phase
         model_name: Model name to use for systems that support it
         use_isolation: Use per-system venvs when available
+
+    Returns:
+        The benchmark results and whether every benchmark and evaluation
+        completed successfully.
     """
     llm_config = llm_config or llm_provider_config_from_env()
     set_llm_provider_env(llm_config)
     validate_no_bigquery_local(systems, llm_config)
 
     results = {}
+    benchmark_succeeded = True
 
     for use_case in use_cases:
         print(f"\n{'='*60}")
@@ -297,10 +313,17 @@ def run_benchmark(
                 )
                 results[use_case][system] = system_results
 
-                if "error" not in system_results:
+                if system_results_succeeded(system_results):
                     print(f"✓ {system} completed successfully (isolated)")
                 else:
-                    print(f"✗ Error running {system}: {system_results['error']}")
+                    benchmark_succeeded = False
+                    if "error" in system_results:
+                        print(
+                            f"✗ Error running {system}: "
+                            f"{system_results['error']}"
+                        )
+                    else:
+                        print(f"✗ One or more queries failed for {system}")
 
             else:
                 # Direct execution in current process (legacy mode)
@@ -312,7 +335,10 @@ def run_benchmark(
 
                 runner_class = get_runner_class(system, use_case)
                 if not runner_class:
+                    error = f"Unable to import runner for {system}"
                     print(f"Skipping {system} due to import error")
+                    results[use_case][system] = {"error": error}
+                    benchmark_succeeded = False
                     continue
 
                 try:
@@ -329,7 +355,13 @@ def run_benchmark(
                         for query_id, metric in system_metrics.items()
                     }
 
-                    print(f"✓ {system} completed successfully")
+                    if system_results_succeeded(
+                        results[use_case][system]
+                    ):
+                        print(f"✓ {system} completed successfully")
+                    else:
+                        print(f"✗ One or more queries failed for {system}")
+                        benchmark_succeeded = False
 
                 except Exception as e:
                     print(f"✗ Error running {system}: {e}")
@@ -337,6 +369,7 @@ def run_benchmark(
 
                     traceback.print_exc()
                     results[use_case][system] = {"error": str(e)}
+                    benchmark_succeeded = False
 
         # Run evaluation
         print(f"\n--- Running evaluation for {use_case} ---")
@@ -346,9 +379,8 @@ def run_benchmark(
 
             # Evaluate all systems
             for system in systems:
-                if (
-                    system in results[use_case]
-                    and "error" not in results[use_case][system]
+                if system in results[use_case] and system_results_succeeded(
+                    results[use_case][system]
                 ):
                     print(f"Evaluating {system}...")
                     evaluator.evaluate_system(system, queries=queries)
@@ -360,8 +392,9 @@ def run_benchmark(
             import traceback
 
             traceback.print_exc()
+            benchmark_succeeded = False
 
-    return results
+    return results, benchmark_succeeded
 
 
 def main():
@@ -509,7 +542,7 @@ Examples:
     print(f"Isolation: {'enabled' if use_isolation else 'disabled'}")
 
     # Run benchmark
-    results = run_benchmark(
+    results, benchmark_succeeded = run_benchmark(
         systems=args.systems,
         use_cases=args.use_cases,
         queries=query_ids,
@@ -531,7 +564,12 @@ Examples:
             if "error" in system_results:
                 print(f"  {system}: ❌ Failed - {system_results['error']}")
             else:
-                print(f"  {system}: ✅ Completed")
+                status_label = (
+                    "✅ Completed"
+                    if system_results_succeeded(system_results)
+                    else "❌ Failed"
+                )
+                print(f"  {system}: {status_label}")
                 if system_results:
                     # Sort by query ID for consistent output
                     sorted_results = sorted(
@@ -586,8 +624,8 @@ Examples:
     sys.stderr.flush()
 
     # Force terminate all threads including background ones (LOTUS connection
-    # pools)
-    os._exit(0)
+    # pools), while preserving the benchmark outcome for callers.
+    os._exit(0 if benchmark_succeeded else 1)
 
 
 if __name__ == "__main__":

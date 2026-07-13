@@ -120,8 +120,14 @@ def main():
         for query_id, metric in metrics.items():
             summary[f"Q{query_id}"] = runner.metric_to_dict(metric)
 
-        # Print summary as JSON to stdout for parent process
+        # Print summary as JSON to stdout for parent process.
         print(f"\n__WORKER_RESULT__{json.dumps(summary)}__END_WORKER_RESULT__")
+
+        succeeded = bool(metrics) and all(
+            getattr(metric, "status", None) == "success"
+            for metric in metrics.values()
+        )
+        return 0 if succeeded else 1
 
     except Exception as e:
         import traceback
@@ -132,4 +138,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
