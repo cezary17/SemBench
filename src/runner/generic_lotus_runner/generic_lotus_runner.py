@@ -109,6 +109,21 @@ class GenericLotusRunner(GenericRunner):
             "max_tokens": self.max_tokens,
         }
 
+        if self.llm_provider_config.is_local:
+            local_config = self.llm_provider_config.merge_kwargs(
+                defaults=base_config,
+                endpoint_fields={
+                    "api_base": self.llm_provider_config.base_url,
+                    "api_key": self.llm_provider_config.api_key,
+                },
+            )
+            lm = LM(
+                self.llm_provider_config.litellm_model_name(self.model_name),
+                **local_config,
+            )
+            self._install_lotus_response_error_handler(lm)
+            return lm
+
         model_lower = self.model_name.lower()
 
         if "gemini-2.5-pro" in model_lower or "gemini_2_5_pro" in model_lower:
@@ -144,7 +159,52 @@ class GenericLotusRunner(GenericRunner):
             print(
                 f"Warning: Unknown model '{self.model_name}', using default configuration"
             )
-            return LM(self.model_name, **base_config)
+            lm = LM(self.model_name, **base_config)
+            self._install_lotus_response_error_handler(lm)
+            return lm
+
+    def _install_lotus_response_error_handler(self, lm: LM) -> None:
+        """Make LOTUS raise returned LiteLLM exceptions with useful context."""
+        original_get_top_choice = lm._get_top_choice
+        original_get_top_choice_logprobs = lm._get_top_choice_logprobs
+        original_cache_response = lm._cache_response
+
+        def get_top_choice(response):
+            self._raise_for_lotus_response_error(response)
+            return original_get_top_choice(response)
+
+        def get_top_choice_logprobs(response):
+            self._raise_for_lotus_response_error(response)
+            return original_get_top_choice_logprobs(response)
+
+        def cache_response(response, hash_value):
+            self._raise_for_lotus_response_error(response)
+            return original_cache_response(response, hash_value)
+
+        lm._get_top_choice = get_top_choice
+        lm._get_top_choice_logprobs = get_top_choice_logprobs
+        lm._cache_response = cache_response
+
+    def _raise_for_lotus_response_error(self, response) -> None:
+        if isinstance(response, Exception):
+            context = f"LOTUS LLM request failed for model '{self.model_name}'"
+            if self.llm_provider_config.is_local:
+                context += f" at '{self.llm_provider_config.base_url}'"
+            detail = str(response) or repr(response)
+            raise RuntimeError(
+                f"{context}: {type(response).__name__}: {detail}"
+            ) from response
+
+        if not hasattr(response, "choices"):
+            context = (
+                "LOTUS LLM returned an invalid response for model "
+                f"'{self.model_name}'"
+            )
+            if self.llm_provider_config.is_local:
+                context += f" at '{self.llm_provider_config.base_url}'"
+            raise RuntimeError(
+                f"{context}: {type(response).__name__}: {response!r}"
+            )
 
     def _initialize_lotus_with_warmup(self):
         """Initialize LOTUS and perform connection warmup to avoid first-query errors."""
@@ -159,7 +219,10 @@ class GenericLotusRunner(GenericRunner):
         for attempt in range(max_retries):
             try:
                 # Make a simple test call to establish connection
-                self.lm.__call__(["hi"], show_progress_bar=False)
+                self.lm.__call__(
+                    [[{"role": "user", "content": "hi"}]],
+                    show_progress_bar=False,
+                )
                 print(
                     f"LOTUS connection warmed up successfully on attempt {attempt + 1}"
                 )

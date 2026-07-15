@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from runner.llm_provider_config import llm_provider_config_from_env
+
 
 @dataclass
 class GenericQueryMetric:
@@ -81,6 +83,7 @@ class GenericRunner(ABC):
         self.model_name = model_name
         self.scale_factor = scale_factor
         self.concurrent_llm_worker = concurrent_llm_worker
+        self.llm_provider_config = llm_provider_config_from_env()
 
         # Manage scenario-specific data
         self.scenario_handler = GenericRunner.get_scenario_handler(
@@ -201,11 +204,7 @@ class GenericRunner(ABC):
         metrics_dict = {}
         for query_id, metric in self.metrics.items():
             query_name = f"Q{query_id}"
-            metrics_dict[query_name] = metric.to_dict()
-            metrics_dict[query_name]["model_name"] = self.model_name
-            metrics_dict[query_name][
-                "concurrent_llm_worker"
-            ] = self.concurrent_llm_worker
+            metrics_dict[query_name] = self.metric_to_dict(metric)
             self.save_results(query_id, metric.results)
 
         # # write query results to csv files
@@ -215,6 +214,26 @@ class GenericRunner(ABC):
         with open(metrics_file, "w") as f:
             json.dump(metrics_dict, f, indent=2)
         print(f"Metrics saved to: {metrics_file}")
+
+    def metric_metadata(self) -> Dict[str, Any]:
+        metadata = {
+            "model_name": self.model_name,
+            "concurrent_llm_worker": self.concurrent_llm_worker,
+        }
+        if self.llm_provider_config.is_local:
+            metadata.update(
+                {
+                    "llm_provider": self.llm_provider_config.provider,
+                    "llm_base_url": self.llm_provider_config.base_url,
+                    "llm_params": self.llm_provider_config.public_params(),
+                }
+            )
+        return metadata
+
+    def metric_to_dict(self, metric: GenericQueryMetric) -> Dict[str, Any]:
+        data = metric.to_dict()
+        data.update(self.metric_metadata())
+        return data
 
     def _get_empty_results_dataframe(self, query_id: int) -> pd.DataFrame:
         """

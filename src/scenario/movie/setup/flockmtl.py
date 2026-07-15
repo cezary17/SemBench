@@ -1,6 +1,7 @@
 
 
 import os
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -8,26 +9,55 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from runner.llm_provider_config import llm_provider_config_from_env
+
 MOVIE_FILES_DIR = os.path.abspath(
     Path(__file__).resolve().parents[4] / "files" / "movie" / "data"
 )
+
+
+def _sql_quote(value) -> str:
+    return str(value).replace("'", "''")
+
+
+def _secret_sql(llm_config) -> str:
+    api_key = (
+        llm_config.api_key
+        if llm_config.is_local
+        else os.environ.get("OPENAI_API_KEY")
+    )
+    if api_key is None:
+        raise ValueError("Environment variable OPENAI_API_KEY is not set.")
+
+    fields = ["TYPE OPENAI", f"API_KEY '{_sql_quote(api_key)}'"]
+    if llm_config.is_local:
+        fields.append(f"BASE_URL '{_sql_quote(llm_config.base_url)}'")
+    return f"CREATE SECRET ({','.join(fields)});"
+
+
+def _model_options_json(llm_config) -> str:
+    options = {
+        "tuple_format": "json",
+        "batch_size": 32,
+        "model_parameters": {"temperature": 0.7},
+    }
+    if llm_config.is_local:
+        options["model_parameters"].update(llm_config.params)
+    return json.dumps(options)
 
 class FlockMTLMovieSetup:
     def __init__(self, model_name: str = "gpt-4o-mini"):
         """
         Initializes the FlockMTL connection using environment variables.
         """
-        if os.environ.get('OPENAI_API_KEY') is None:
-            raise ValueError("Environment variable OPENAI_API_KEY is not set.")
+        llm_config = llm_provider_config_from_env()
 
         self.flockmtl_conn = duckdb.connect(os.path.join(MOVIE_FILES_DIR, "movie_database.duckdb"))
         
         self.flockmtl_conn.install_extension("flockmtl", repository="community")
         self.flockmtl_conn.load_extension("flockmtl")
 
-        self.flockmtl_conn.execute(
-            f"""CREATE SECRET (TYPE OPENAI,API_KEY '{os.environ.get('OPENAI_API_KEY')}');"""
-        )
+        self.flockmtl_conn.execute(_secret_sql(llm_config))
 
         if not model_name in self.flockmtl_conn.execute("GET MODELS;").fetchdf()["model"].tolist():
             self.flockmtl_conn.execute("""
@@ -35,9 +65,11 @@ class FlockMTLMovieSetup:
                 'model_name',
                 'model_name', 
                 'openai', 
-                {"tuple_format": "json", "batch_size": 32, "model_parameters": {"temperature": 0.7}}
+                'model_options'
                 );
-            """.replace("model_name", model_name))
+            """.replace("model_name", _sql_quote(model_name)).replace(
+                "'model_options'", _model_options_json(llm_config)
+            ))
 
 
     def _upload_file_to_db(self, csv_path: str, table_name: str):
@@ -49,7 +81,8 @@ class FlockMTLMovieSetup:
             """)
         
 
-    def setup_data(self, data_dir: str):
+    def setup_data(self, data_dir: str = None):
+        data_dir = data_dir or str(Path(__file__).resolve().parents[4] / "files" / "movie")
         self._upload_file_to_db(
             csv_path=os.path.join(data_dir, "data/Movies_2000.csv"), 
             table_name="movies_2000"

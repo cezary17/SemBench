@@ -28,7 +28,7 @@ class PalimpzestRunner(GenericPalimpzestRunner):
         skip_setup: bool = False,
     ):
         super().__init__(
-            use_case, scale_factor, model_name, concurrent_llm_worker
+            use_case, scale_factor, model_name, concurrent_llm_worker, skip_setup
         )
 
     def _discover_queries(self):
@@ -83,6 +83,9 @@ class PalimpzestRunner(GenericPalimpzestRunner):
     def get_palimpzest_config(
         self, query_id, model_name
     ) -> pz.QueryProcessorConfig:
+        if self.llm_provider_config.is_local:
+            return self._local_palimpzest_config()
+
         is_audio = True if query_id in [2, 5, 6, 7] else False
 
         model = None

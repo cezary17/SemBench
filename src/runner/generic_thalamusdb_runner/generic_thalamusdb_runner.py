@@ -5,6 +5,9 @@ Generic ThalamusDB runner base class
 """
 
 import time
+import json
+import re
+import tempfile
 import pandas as pd
 from typing import Dict, Any, List, Optional
 
@@ -72,16 +75,84 @@ class GenericThalamusDBRunner(GenericRunner):
             "gpt_5mini": "gpt_5mini",
             "gemini-2.5-pro": "gemini_2.5pro"
         }
+        model_config_path = self._get_model_config_path(model_name_to_file_name)
         self.engine = ExecutionEngine(
             self.db,
             dop=20,
-            model_config_path=f"{Path(__file__).resolve().parents[3]}/config/system/thalamusdb/{model_name_to_file_name[self.model_name]}.json",
+            model_config_path=model_config_path,
         )
         self.constraints = Constraints(max_calls=100000000000, max_seconds=6000, max_tokens=10000000000000000000000)
 
     def get_system_name(self) -> str:
         """Return the name of the system."""
         return "thalamusdb"
+
+    def _discover_queries(self) -> List[int]:
+        """Discover query files or embedded ``_execute_q*`` methods."""
+        query_ids = super()._discover_queries()
+        if query_ids:
+            return query_ids
+
+        pattern = re.compile(r"_execute_q(\d+)$")
+        return sorted(
+            int(match.group(1))
+            for attr_name in dir(self)
+            if (match := pattern.match(attr_name))
+            and callable(getattr(self, attr_name, None))
+        )
+
+    def _get_model_config_path(self, model_name_to_file_name: Dict[str, str]) -> str:
+        if self.llm_provider_config.is_local:
+            return self._write_local_model_config()
+
+        return (
+            f"{Path(__file__).resolve().parents[3]}"
+            f"/config/system/thalamusdb/"
+            f"{model_name_to_file_name[self.model_name]}.json"
+        )
+
+    def _write_local_model_config(self) -> str:
+        endpoint_fields = {
+            "model": self.llm_provider_config.litellm_model_name(
+                self.model_name
+            ),
+            "api_base": self.llm_provider_config.base_url,
+            "api_key": self.llm_provider_config.api_key,
+        }
+        filter_kwargs = self.llm_provider_config.merge_kwargs(
+            defaults={"temperature": 0, "max_tokens": 1},
+            endpoint_fields=endpoint_fields,
+        )
+        join_kwargs = self.llm_provider_config.merge_kwargs(
+            defaults={"temperature": 0, "stop": ["."]},
+            endpoint_fields=endpoint_fields,
+        )
+        model_config = {
+            "models": [
+                {
+                    "modalities": ["text", "image"],
+                    "priority": 10,
+                    "kwargs": {
+                        "filter": filter_kwargs,
+                        "join": join_kwargs,
+                    },
+                },
+                {
+                    "modalities": ["text", "audio"],
+                    "priority": 10,
+                    "kwargs": {
+                        "filter": filter_kwargs,
+                        "join": join_kwargs,
+                    },
+                },
+            ]
+        }
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix="sembench_thalamusdb_", delete=False
+        ) as config_file:
+            json.dump(model_config, config_file, indent=2)
+            return config_file.name
 
     def execute_query(self, query_id: int) -> GenericQueryMetric:
         """
