@@ -6,6 +6,7 @@ Generic ThalamusDB runner base class
 
 import time
 import json
+import re
 import tempfile
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -85,6 +86,20 @@ class GenericThalamusDBRunner(GenericRunner):
     def get_system_name(self) -> str:
         """Return the name of the system."""
         return "thalamusdb"
+
+    def _discover_queries(self) -> List[int]:
+        """Discover query files or embedded ``_execute_q*`` methods."""
+        query_ids = super()._discover_queries()
+        if query_ids:
+            return query_ids
+
+        pattern = re.compile(r"_execute_q(\d+)$")
+        return sorted(
+            int(match.group(1))
+            for attr_name in dir(self)
+            if (match := pattern.match(attr_name))
+            and callable(getattr(self, attr_name, None))
+        )
 
     def _get_model_config_path(self, model_name_to_file_name: Dict[str, str]) -> str:
         if self.llm_provider_config.is_local:
