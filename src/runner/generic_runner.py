@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from runner.llm_provider_config import llm_provider_config_from_env
+from runner.measurement_client import QueryMeasurementClient
 
 
 @dataclass
@@ -84,6 +85,7 @@ class GenericRunner(ABC):
         self.scale_factor = scale_factor
         self.concurrent_llm_worker = concurrent_llm_worker
         self.llm_provider_config = llm_provider_config_from_env()
+        self.query_measurement_client = QueryMeasurementClient.from_env()
 
         # Manage scenario-specific data
         self.scenario_handler = GenericRunner.get_scenario_handler(
@@ -127,10 +129,23 @@ class GenericRunner(ABC):
             Dictionary mapping query IDs to GenericQueryMetric objects
         """
         results = {}
-        for query_id in query_ids:
+        for query_ordinal, query_id in enumerate(query_ids, start=1):
+            boundary = None
+            if self.query_measurement_client is not None:
+                boundary = self.query_measurement_client.start_query(
+                    system=self.system_name,
+                    use_case=self.use_case,
+                    query_id=query_id,
+                    query_ordinal=query_ordinal,
+                )
+
+            error_type = None
             try:
                 results[query_id] = self.execute_query(query_id)
             except Exception as e:
+                if boundary is not None:
+                    boundary.mark_work_ended()
+                error_type = type(e).__name__
                 print(f"Error executing query {query_id}: {e}")
                 results[query_id] = GenericQueryMetric(
                     query_id=query_id,
@@ -138,6 +153,21 @@ class GenericRunner(ABC):
                     status="failed",
                     error=str(e),
                 )
+            else:
+                if boundary is not None:
+                    boundary.mark_work_ended()
+            finally:
+                if boundary is not None:
+                    query_succeeded = (
+                        query_id in results
+                        and results[query_id].status == "success"
+                    )
+                    boundary.finish(
+                        status=(
+                            "completed" if query_succeeded else "failed"
+                        ),
+                        error_type=error_type,
+                    )
         return results
 
     def run_all_queries(

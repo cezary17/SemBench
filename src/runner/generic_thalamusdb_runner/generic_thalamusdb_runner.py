@@ -197,6 +197,8 @@ class GenericThalamusDBRunner(GenericRunner):
                 )
             else:
                 # Result is a dictionary with 'results', 'token_usage', 'money_cost'
+                if result.get("error"):
+                    raise RuntimeError(result["error"])
                 return GenericQueryMetric(
                     query_id=query_id,
                     status="success",
